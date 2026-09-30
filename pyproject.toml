@@ -16,5 +16,8 @@ dev = ["pytest", "pikepdf", "pypdfium2", "pillow"]
 [tool.setuptools.packages.find]
 include = ["pixelpdf*"]
 
+[tool.setuptools.package-data]
+"pixelpdf.interactive" = ["*.js", "games/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

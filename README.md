@@ -4,7 +4,8 @@ Generate PDF documents where every pixel is set in code. A numpy rendering
 engine draws shapes, bitmap text with animated effects, 2D lighting with
 shadows, particles and spinners, and the PDF writer stores the result
 losslessly on A4 pages. Animations can be exported as flipbook PDFs that
-play frame by frame. In-PDF games come in a later milestone.
+play frame by frame, and interactive PDFs run games and simulations live
+in the viewer's JavaScript engine.
 
 ## How it works
 
@@ -141,6 +142,90 @@ full resolution. Storing them at lower resolution and letting the viewer
 enlarge them would be smaller, but PDFium smooths images enlarged 2× by
 default, so the result wouldn't be pixel-exact.
 
+## Interactive PDFs (games)
+
+`pixelpdf.interactive` builds pages where a JavaScript program runs inside
+the PDF viewer and draws on a live pixel display:
+
+```python
+from pixelpdf.interactive.games import build_game
+
+build_game("snake").save("snake.pdf")      # also "breakout", "fireworks"
+```
+
+**How the display works.** PDF viewers can't draw pixels from a script,
+but they can change the text in form fields. So:
+- Each row of the display is a read-only *comb* text field per palette
+  colour. A comb field splits its width into equal cells, one per
+  character.
+- A pixel of colour *k* is a ZapfDingbats ■ in row field *k*.
+- Colour 0 is transparent, so the page's static artwork (a pixel-exact
+  canvas, as elsewhere in pixelpdf) shows through. It holds the bezel, the
+  dim "off" LEDs and the instructions.
+- The runtime only rewrites fields whose text changed.
+
+**Input**
+- *Keyboard:* click the key box and type. The keystroke script passes each
+  key to the game.
+- *Buttons:* on-screen push buttons behave like held keys, for mouse and
+  touch.
+- Arrow keys don't reach PDF scripts, so games use W A S D and space. P
+  pauses.
+
+**Measured in Chromium's viewer (PDFium)**
+- Timers fire at about 50 Hz.
+- A 48×36 display in 6 colours (216 fields), fully redrawn every frame,
+  runs at about 22 fps. Games redraw far less, because only changed rows
+  are written.
+- Changing a field's `fillColor` or `textColor` doesn't repaint in PDFium,
+  which is why colours are separate stacked fields.
+- Editable fields get a blue highlight, so display fields are read-only.
+
+**Build your own**
+
+```python
+from pixelpdf.interactive import InteractiveDocument
+
+doc = InteractiveDocument(fps=30)
+page = doc.new_page(background="#101018")            # page.canvas: static art
+page.display(x=95, y=300, cols=40, rows=30, cell=25,
+             palette=[None, "#ff4d4d", "#2ecc71", "#ffe66d"])
+page.hud("score", x=95, y=240, w=500, h=44)
+page.key_capture(x=95, y=1100, w=330, h=70)
+page.button(" ", x=470, y=1100, w=200, h=70, label="FIRE")
+doc.set_game("""
+PX.run({
+  update: function (px, dt) {
+    px.clear(0);
+    var x = Math.floor(px.time * 10) % px.W;
+    px.rect(x, 10, 3, 3, px.held(' ') ? 2 : 1);
+    px.text('HI', 2, 2, 3);
+    px.hud('score', 'T ' + px.time.toFixed(1));
+  }
+});
+""")
+doc.save("mine.pdf")
+```
+
+The runtime API (`px`):
+- **Drawing:** `set`, `get`, `rect`, `line`, `clear`, `text` (a 3×5 font),
+  `textCentered`.
+- **Input:** `keys` (pressed this frame), `pressed(k)`, `held(k)`.
+- **Time and randomness:** `random` and `randint` (seeded, deterministic),
+  `time`, `frame`, `paused`.
+- **Text fields:** `hud(name, text)`.
+
+Scripts are ES5, because Acrobat's JavaScript engine is older than
+Chrome's.
+
+**Viewer support**
+- **Chrome and Edge:** tested here with headless Chromium.
+- **Adobe Acrobat and Reader:** the fields, fonts and JavaScript calls used
+  are standard Acrobat features, but untested here.
+- **Firefox:** pdf.js runs only part of the Acrobat API; untested.
+- **macOS Preview, most mobile apps, printers:** show the static page with
+  an empty display.
+
 ## Demos
 
 ```bash
@@ -148,6 +233,7 @@ pip install -e .[dev]
 python demos/static_page.py                          # out/static_page.pdf
 python demos/engine_showcase.py --frames out/frames  # out/engine_showcase.pdf + PNGs
 python demos/flipbook_demo.py                        # out/flipbook.pdf
+python demos/games.py                                # out/snake.pdf, breakout.pdf, fireworks.pdf
 ```
 
 - **`static_page`:** a gradient, a colour wheel, a Phong-lit sphere, a
@@ -165,6 +251,9 @@ python demos/flipbook_demo.py                        # out/flipbook.pdf
   - Spinners, wave text and a bouncing ball loop.
   - Also a typewriter caption and a progress bar.
   - The file is about 8 MB; storing whole frames would take about 22 MB.
+- **`games`:** Snake, Breakout (with levels and lives) and Fireworks (a
+  particle toy with gravity, wind, drag and bouncing sparks). Each is a
+  one-page A4 PDF of 130–190 KB.
 
 ## Tests
 
@@ -184,6 +273,15 @@ python -m pytest
   rectangles must be disjoint, tight and cover every changed pixel. Looping
   content must not store new images, and the page timing, transition and
   full-screen entries must be present.
+- **Interactive:**
+  - PDF structure: field flags, geometry, fonts, actions.
+  - The generated script must be valid JavaScript and stay within ES5.
+  - Runtime and game logic run in Node against fake fields
+    (`tests/js/harness.js`): drawing, which fields get rewritten, input,
+    pause, snake eating and crashing, breakout with an autopilot paddle,
+    fireworks particle bounds.
+  - Chromium's PDF viewer runs the real files (`tests/js/e2e.js`): the
+    display must animate, respond to typed keys and freeze on pause.
 
 ## Layout
 
@@ -204,6 +302,10 @@ pixelpdf/
   engine/png.py    PNG export
   document.py      Document / Page API
   flipbook.py      Flipbook: keyframes + dirty-rect patches, /Dur + /Trans pages
+  interactive/builder.py  form-field display, HUD, buttons, key capture, script
+  interactive/runtime.js  in-viewer runtime (ES5): framebuffer, input, main loop
+  interactive/games.py    built-in games laid out as A4 pages
+  interactive/games/*.js  snake, breakout, fireworks
 demos/             runnable examples
 tests/
 ```
@@ -215,6 +317,6 @@ tests/
    lighting with shadows and bloom, particle systems, spinners, timeline.
 3. ✅ **Flipbook backend:** one page per frame with auto-advance (`/Dur`,
    `/Trans`), shared keyframes, dirty-rectangle patches and deduplication.
-4. **Interactive backend:** embedded JavaScript games and simulations,
-   rendered to a grid of form fields (Chrome/Edge and Acrobat).
+4. ✅ **Interactive backend:** embedded JavaScript games and simulations,
+   rendered to a grid of form fields (Chrome/Edge; Acrobat untested).
 5. **Showcase PDF** and a table of which viewer supports what.
