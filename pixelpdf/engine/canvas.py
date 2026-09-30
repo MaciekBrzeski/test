@@ -116,6 +116,12 @@ class Canvas:
     def copy(self) -> "Canvas":
         return Canvas.from_array(self.pixels.copy(), self.mode)
 
+    def upscale(self, factor: int) -> "Canvas":
+        """Nearest-neighbour enlargement: each pixel becomes a factor x factor block."""
+        if factor < 1:
+            raise ValueError("factor must be a positive integer")
+        return Canvas.from_array(self.pixels.repeat(factor, 0).repeat(factor, 1), self.mode)
+
     # -- compositing -------------------------------------------------------
 
     def blend(self, x: int, y: int, coverage, color, mode: str = "normal",

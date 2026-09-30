@@ -3,8 +3,8 @@
 Generate PDF documents where every pixel is set in code. A numpy rendering
 engine draws shapes, bitmap text with animated effects, 2D lighting with
 shadows, particles and spinners, and the PDF writer stores the result
-losslessly on A4 pages. Flipbook animation and in-PDF games come in later
-milestones.
+losslessly on A4 pages. Animations can be exported as flipbook PDFs that
+play frame by frame. In-PDF games come in a later milestone.
 
 ## How it works
 
@@ -82,12 +82,72 @@ Frames are pure functions of time `t`, so any frame can be rendered on its
 own and renders are reproducible. Particle simulations are the exception:
 they are stateful and have to be stepped in order.
 
+## Flipbook animation
+
+`Flipbook` turns frames into pages that advance automatically:
+
+```python
+from pixelpdf.flipbook import Flipbook
+from pixelpdf.engine import spinners
+
+book = Flipbook(fps=12, title="Spinner")             # A4 pages, 144 DPI
+
+def draw(canvas, t):
+    spinners.arc_spinner(canvas, 595, 842, 80, t, "#2e86de")
+
+book.add_animation(draw, duration=2.0)              # 24 frames
+book.save("spinner.pdf")
+```
+
+Frames can also be added one at a time with `book.add_frame(canvas,
+duration=None, advance=True, transition=None)`. `advance=False` makes a
+page that waits, such as a title page. Transitions are `replace`
+(default), `dissolve`, `fade`, `wipe`, `push`, `cover`, `uncover`,
+`split`, `blinds`, `box`, `glitter` and `fly`.
+
+**How it plays**
+- Each page carries `/Dur` (seconds on screen) and `/Trans` (transition),
+  and the document asks to open in full screen.
+- Adobe Acrobat and Reader honour this in full-screen mode, so the frames
+  play by themselves. To loop, turn on *Preferences > Full Screen > Loop
+  after last page*. This hasn't been tested in Acrobat here.
+- Other viewers (browsers, most mobile apps) ignore the timing and show
+  the frames as pages you scroll through.
+
+**How it stays small**
+- A page is a full-page *keyframe* image plus *patches*: tight rectangles
+  around the pixels that differ from the keyframe. A frame that differs
+  from every keyframe by more than 35% becomes a new keyframe.
+- For each frame, a few patch layouts are compressed and the smallest is
+  kept. Layouts range from fine tiles to merged tiles to one bounding box.
+- Identical patches and identical frames are stored once, so looping
+  content costs nothing after its first cycle.
+- Frames are encoded as they're added, so memory doesn't grow with the
+  animation's length.
+
+**Where it helps.** Flat static areas compress to almost nothing even when
+stored whole, so the saving comes from:
+- detailed static art that animation plays over (it's stored only once),
+- looping content,
+- small moving elements.
+
+A region that changes completely every frame, such as a moving light over
+a whole scene, costs the same either way. Rendering such a region as 2×2
+pixel blocks (`canvas.upscale(2)`) makes it compress about 2.5× better.
+
+**Pixel exactness.** Every page renders exactly like its frame; the tests
+check this with PDFium at 72 and 144 DPI. Patches are always stored at
+full resolution. Storing them at lower resolution and letting the viewer
+enlarge them would be smaller, but PDFium smooths images enlarged 2× by
+default, so the result wouldn't be pixel-exact.
+
 ## Demos
 
 ```bash
 pip install -e .[dev]
 python demos/static_page.py                          # out/static_page.pdf
 python demos/engine_showcase.py --frames out/frames  # out/engine_showcase.pdf + PNGs
+python demos/flipbook_demo.py                        # out/flipbook.pdf
 ```
 
 - **`static_page`:** a gradient, a colour wheel, a Phong-lit sphere, a
@@ -99,6 +159,12 @@ python demos/engine_showcase.py --frames out/frames  # out/engine_showcase.pdf +
     fountain bouncing off obstacles.
   - Page 2 shows one animation (moving light, particles, spinner, wave text)
     as a contact sheet of its frames.
+- **`flipbook_demo`:** a title page, then 48 frames at 12 fps.
+  - A detailed textured scene is stored once, and sparks bounce over it.
+  - A panel with a moving light changes completely every frame.
+  - Spinners, wave text and a bouncing ball loop.
+  - Also a typewriter caption and a progress bar.
+  - The file is about 8 MB; storing whole frames would take about 22 MB.
 
 ## Tests
 
@@ -114,6 +180,10 @@ python -m pytest
 - **Engine:** primitives are checked for exact coverage and area, glyphs
   for pixel-exact output, lights for falloff and shadow geometry, and
   particles for physics, collisions and determinism.
+- **Flipbook:** every page must render exactly like its frame. Dirty
+  rectangles must be disjoint, tight and cover every changed pixel. Looping
+  content must not store new images, and the page timing, transition and
+  full-screen entries must be present.
 
 ## Layout
 
@@ -133,6 +203,7 @@ pixelpdf/
   engine/filters.py  blur, resize, smoothstep
   engine/png.py    PNG export
   document.py      Document / Page API
+  flipbook.py      Flipbook: keyframes + dirty-rect patches, /Dur + /Trans pages
 demos/             runnable examples
 tests/
 ```
@@ -142,9 +213,8 @@ tests/
 1. ✅ **Writer and static page:** lossless, pixel-exact A4 pages.
 2. ✅ **Engine:** drawing primitives, bitmap font and text effects, 2D
    lighting with shadows and bloom, particle systems, spinners, timeline.
-3. **Flipbook backend:** one page per frame with auto-advance (`/Dur`,
-   `/Trans`), shared backgrounds and per-frame dirty rectangles to keep
-   files small.
+3. ✅ **Flipbook backend:** one page per frame with auto-advance (`/Dur`,
+   `/Trans`), shared keyframes, dirty-rectangle patches and deduplication.
 4. **Interactive backend:** embedded JavaScript games and simulations,
    rendered to a grid of form fields (Chrome/Edge and Acrobat).
 5. **Showcase PDF** and a table of which viewer supports what.

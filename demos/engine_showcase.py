@@ -100,12 +100,16 @@ def spinner_filmstrip(w: int, frames: int) -> Canvas:
     return contact_sheet(rows, 2, gap=8, background=PAPER)
 
 
-def lit_scene(w: int, h: int, t: float = 0.0, seed: int = 5) -> Canvas:
-    """Stone floor with pillars, lit by a warm lamp, a cold lamp and a spotlight."""
+def lit_scene(w: int, h: int, t: float = 0.0, seed: int = 5, texture: bool = True) -> Canvas:
+    """Stone floor with pillars, lit by a warm lamp, a cold lamp and a spotlight.
+
+    texture=False skips the noisy stone texture, which compresses much better.
+    """
     c = Canvas(w, h, background="#b9b2a4")
-    rng = np.random.default_rng(seed)
-    noise = rng.normal(0, 7, (h // 4 + 1, w // 4 + 1)).repeat(4, 0).repeat(4, 1)[:h, :w]
-    c.pixels[:] = np.clip(c.pixels + noise[:, :, None], 0, 255).astype(np.uint8)
+    if texture:
+        rng = np.random.default_rng(seed)
+        noise = rng.normal(0, 7, (h // 4 + 1, w // 4 + 1)).repeat(4, 0).repeat(4, 1)[:h, :w]
+        c.pixels[:] = np.clip(c.pixels + noise[:, :, None], 0, 255).astype(np.uint8)
     for y in range(0, h, 40):  # tile grout
         R.rect(c, 0, y, w, 2, "#9b9384")
     for x in range(0, w, 40):

@@ -69,3 +69,13 @@ def test_invalid_canvas():
         Canvas(0, 5)
     with pytest.raises(ValueError):
         Canvas(5, 5, mode="RGBA")
+
+
+def test_upscale():
+    c = Canvas(2, 1, background=0)
+    c.set_pixel(1, 0, 255)
+    big = c.upscale(3)
+    assert (big.width, big.height) == (6, 3)
+    assert big.pixels[:, :3].max() == 0 and big.pixels[:, 3:].min() == 255
+    with pytest.raises(ValueError):
+        c.upscale(0)
