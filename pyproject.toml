@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 dependencies = ["numpy>=1.22"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pikepdf", "pypdfium2"]
+dev = ["pytest", "pikepdf", "pypdfium2", "pillow"]
 
 [tool.setuptools.packages.find]
 include = ["pixelpdf*"]

@@ -16,7 +16,7 @@ import numpy as np
 
 from .objects import Name, Stream
 
-__all__ = ["encode_image"]
+__all__ = ["encode_image", "png_filter"]
 
 _COLOR_SPACES = {1: "DeviceGray", 3: "DeviceRGB", 4: "DeviceCMYK"}
 
@@ -45,7 +45,7 @@ def encode_image(pixels: np.ndarray, *, level: int = 6, predict: bool = True) ->
     }
     rows = np.ascontiguousarray(pixels).reshape(height, width * channels)
     if predict:
-        payload = _png_predict(rows, channels)
+        payload = png_filter(rows, channels)
         header["DecodeParms"] = {
             "Predictor": 15,
             "Colors": channels,
@@ -60,7 +60,7 @@ def encode_image(pixels: np.ndarray, *, level: int = 6, predict: bool = True) ->
 _CHUNK_ROWS = 256  # bounds temporary memory on large (e.g. 300 DPI A4) images
 
 
-def _png_predict(rows: np.ndarray, bpp: int) -> bytes:
+def png_filter(rows: np.ndarray, bpp: int) -> bytes:
     """Apply per-row adaptive PNG filtering; returns filter-byte-prefixed rows."""
     out = []
     prev = np.zeros((1, rows.shape[1]), dtype=np.uint8)

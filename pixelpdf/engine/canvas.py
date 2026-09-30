@@ -11,7 +11,7 @@ from typing import Sequence, Union
 
 import numpy as np
 
-__all__ = ["Canvas", "Color", "parse_color", "a4_size", "A4_MM"]
+__all__ = ["Canvas", "Color", "parse_color", "a4_size", "A4_MM", "BLEND_MODES"]
 
 A4_MM = (210.0, 297.0)
 MM_PER_INCH = 25.4
@@ -115,3 +115,71 @@ class Canvas:
 
     def copy(self) -> "Canvas":
         return Canvas.from_array(self.pixels.copy(), self.mode)
+
+    # -- compositing -------------------------------------------------------
+
+    def blend(self, x: int, y: int, coverage, color, mode: str = "normal",
+              opacity: float = 1.0) -> None:
+        """Composite `color` through a coverage mask whose top-left pixel is (x, y).
+
+        `coverage` is an (h, w) array in 0..1 (bool works too). `color` is a
+        single color or an (h, w, C) array of per-pixel colors. Modes:
+        normal, add, multiply, screen. Fully covered `normal` pixels receive
+        the color exactly; the mask is clipped to the canvas.
+        """
+        if mode not in BLEND_MODES:
+            raise ValueError(f"mode must be one of {BLEND_MODES}, got {mode!r}")
+        coverage = np.asarray(coverage, dtype=np.float32)
+        h, w = coverage.shape
+        x0, y0 = max(x, 0), max(y, 0)
+        x1, y1 = min(x + w, self.width), min(y + h, self.height)
+        if x0 >= x1 or y0 >= y1:
+            return
+        region = (slice(y0 - y, y1 - y), slice(x0 - x, x1 - x))
+        alpha = coverage[region][:, :, np.newaxis] * np.float32(opacity)
+        if isinstance(color, np.ndarray) and color.ndim == 3:
+            src = color[region].astype(np.float32)
+        else:
+            src = self.color(color).astype(np.float32)
+        dst = self.pixels[y0:y1, x0:x1].astype(np.float32)
+        self.pixels[y0:y1, x0:x1] = _to_u8(_composite(dst, src, alpha, mode))
+
+    def blit(self, src, x: int, y: int, opacity: float = 1.0, mask=None,
+             mode: str = "normal") -> None:
+        """Draw another canvas (or uint8 array) with its top-left at (x, y)."""
+        pixels = src.pixels if isinstance(src, Canvas) else np.asarray(src)
+        if pixels.ndim == 2:
+            pixels = pixels[:, :, np.newaxis]
+        if pixels.shape[2] != self.channels:
+            raise ValueError("source and destination channel counts differ")
+        coverage = np.ones(pixels.shape[:2], np.float32) if mask is None else mask
+        self.blend(x, y, coverage, pixels, mode=mode, opacity=opacity)
+
+    def to_float(self) -> np.ndarray:
+        """Pixels as float32 in 0..1."""
+        return self.pixels.astype(np.float32) / 255.0
+
+    def set_float(self, values: np.ndarray) -> None:
+        """Store float 0..1 values (clipped and rounded) into the canvas."""
+        self.pixels[...] = _to_u8(np.asarray(values, dtype=np.float32) * 255.0)
+
+    def save_png(self, path) -> None:
+        from .png import save_png
+        save_png(path, self.pixels)
+
+
+BLEND_MODES = ("normal", "add", "multiply", "screen")
+
+
+def _composite(dst: np.ndarray, src: np.ndarray, alpha: np.ndarray, mode: str) -> np.ndarray:
+    if mode == "normal":
+        return dst + (src - dst) * alpha
+    if mode == "add":
+        return dst + src * alpha
+    if mode == "multiply":
+        return dst + (dst * src / 255.0 - dst) * alpha
+    return dst + (255.0 - (255.0 - dst) * (255.0 - src) / 255.0 - dst) * alpha  # screen
+
+
+def _to_u8(values: np.ndarray) -> np.ndarray:
+    return np.clip(values + 0.5, 0, 255).astype(np.uint8)
