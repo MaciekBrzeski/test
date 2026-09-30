@@ -14,9 +14,9 @@ from ..engine import raster as R
 from ..engine.canvas import Canvas, Color
 from ..engine.font import draw_text, measure_text
 from ..engine.light import glow, vignette
-from .builder import Display, InteractiveDocument
+from .builder import Display, InteractiveDocument, InteractivePage
 
-__all__ = ["GAMES", "GameSpec", "build_game", "draw_led_grid", "game_source"]
+__all__ = ["GAMES", "GameSpec", "add_game_page", "build_game", "draw_led_grid", "game_source"]
 
 _GAME_DIR = Path(__file__).parent / "games"
 
@@ -90,6 +90,15 @@ def build_game(name: str, *, dpi: float = 144, seed: int = 7) -> InteractiveDocu
     spec = GAMES[name]
     doc = InteractiveDocument(dpi=dpi, fps=spec.fps, title=f"{spec.title.title()} (pixelpdf)",
                               seed=seed)
+    add_game_page(doc, name)
+    return doc
+
+
+def add_game_page(doc: InteractiveDocument, name: str) -> InteractivePage:
+    """Append an A4 page with game `name`, its controls and instructions, to `doc`."""
+    if name not in GAMES:
+        raise ValueError(f"unknown game {name!r}; choose from {sorted(GAMES)}")
+    spec = GAMES[name]
     page = doc.new_page(background="#101018")
     c = page.canvas
     W, H = c.width, c.height
@@ -147,5 +156,5 @@ def build_game(name: str, *, dpi: float = 144, seed: int = 7) -> InteractiveDocu
         ny += px(30)
     vignette(c, strength=0.35)
 
-    doc.set_game(game_source(name))
-    return doc
+    page.set_game(game_source(name))
+    return page

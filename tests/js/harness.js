@@ -3,7 +3,9 @@
 //
 //   node harness.js <scenario.json>
 //
-// scenario: {runtime, game, config, steps: [{keys, down, up, frames, dt, eval}], report}
+// scenario: {runtime, game, config, setup, steps: [{keys, down, up, frames, dt, eval}]}
+// The runtime is instantiated as the global PX, and the game source runs
+// at top level, so tests can reach its state (e.g. Snake.state).
 // Prints JSON: {grid, hud, writes, frame, paused, results}.
 'use strict';
 const fs = require('fs');
@@ -25,6 +27,7 @@ global.app = { setInterval: () => 1, clearInterval: () => {} };
 
 vm.runInThisContext('var PX_CONFIG = ' + JSON.stringify(scenario.config) + ';');
 vm.runInThisContext(fs.readFileSync(scenario.runtime, 'utf8'));
+vm.runInThisContext('var PX = PXRuntime(PX_CONFIG);');
 if (scenario.game) vm.runInThisContext(fs.readFileSync(scenario.game, 'utf8'));
 if (scenario.setup) vm.runInThisContext(scenario.setup);
 
@@ -45,7 +48,8 @@ for (let y = 0; y < cfg.rows; y++) {
   grid.push(row);
 }
 const hud = {};
-for (const name of Object.keys(fields)) if (name.startsWith('hud_')) hud[name.slice(4)] = fields[name].value;
+const hudPrefix = cfg.id + '_hud_';
+for (const name of Object.keys(fields)) if (name.startsWith(hudPrefix)) hud[name.slice(hudPrefix.length)] = fields[name].value;
 const rowFields = {};
 for (const name of Object.keys(fields)) if (name.startsWith(cfg.prefix)) rowFields[name] = fields[name].value;
 console.log(JSON.stringify({ grid, hud, writes, rowFields, frame: PX.frame, paused: PX.paused, results }));

@@ -38,7 +38,7 @@ import numpy as np
 from .engine.canvas import Canvas, Color, a4_size
 from .pdf.image import encode_image
 from .pdf.objects import Name, Ref, Stream, serialize
-from .pdf.writer import PdfWriter
+from .pdf.pages import PageSink
 
 __all__ = ["Flipbook", "FlipbookStats", "TRANSITIONS", "dirty_rects"]
 
@@ -139,7 +139,7 @@ class Flipbook:
                  size: Optional[tuple[int, int]] = None, title: Optional[str] = None,
                  transition: str = "replace", transition_duration: float = 0.0,
                  fullscreen: bool = True, tile: int = 32, keyframe_threshold: float = 0.35,
-                 max_keyframes: int = 8, compression: int = 6):
+                 max_keyframes: int = 8, compression: int = 6, sink: Optional[PageSink] = None):
         """
         dpi, size: page resolution; size (w, h) in pixels defaults to A4.
         fps: default frame rate; each frame shows for 1/fps s unless given.
@@ -149,6 +149,8 @@ class Flipbook:
         keyframe_threshold: store a frame as a new keyframe when more than
             this fraction of its pixels differs from every existing keyframe.
         max_keyframes: how many recent keyframes new frames are compared with.
+        sink: write pages into a shared PageSink (see Composer) instead of a
+            file of its own; title and fullscreen are then the composer's.
         """
         if fps <= 0 or dpi <= 0:
             raise ValueError("fps and dpi must be positive")
@@ -168,11 +170,9 @@ class Flipbook:
         self.compression = compression
         self.stats = FlipbookStats()
 
-        self._writer = PdfWriter()
-        self._catalog = self._writer.reserve()
-        self._pages_root = self._writer.reserve()
-        self._info = self._writer.reserve()
-        self._kids: list[Ref] = []
+        self._owns_sink = sink is None
+        self._sink = sink if sink is not None else PageSink()
+        self._writer = self._sink.writer
         self._keyframes: list[tuple[np.ndarray, Ref]] = []
         self._images: dict[bytes, Ref] = {}
         self._pages: dict[bytes, tuple[Ref, dict]] = {}
@@ -336,8 +336,6 @@ class Flipbook:
         content, resources = shared
         s = POINTS_PER_INCH / self.dpi
         page = {
-            "Type": Name("Page"),
-            "Parent": self._pages_root,
             "MediaBox": [0, 0, self.width * s, self.height * s],
             "Resources": resources,
             "Contents": content,
@@ -346,22 +344,11 @@ class Flipbook:
         }
         if duration is not None:
             page["Dur"] = duration
-        self._kids.append(self._writer.add(page))
+        self._sink.add_page(page)
 
     def _write(self, fp: BinaryIO) -> None:
-        if not self._kids:
+        if not self._owns_sink:
+            raise ValueError("this flipbook is part of a Composer; save the composer instead")
+        if self.stats.frames == 0:
             raise ValueError("flipbook has no frames")
-        w = self._writer
-        w.set(self._pages_root, {"Type": Name("Pages"), "Kids": list(self._kids),
-                                 "Count": len(self._kids)})
-        catalog = {"Type": Name("Catalog"), "Pages": self._pages_root,
-                   "PageLayout": Name("SinglePage")}
-        if self.fullscreen:
-            catalog["PageMode"] = Name("FullScreen")
-            catalog["ViewerPreferences"] = {"NonFullScreenPageMode": Name("UseNone")}
-        w.set(self._catalog, catalog)
-        info = {"Producer": "pixelpdf"}
-        if self.title:
-            info["Title"] = self.title
-        w.set(self._info, info)
-        w.write(fp, self._catalog, self._info)
+        self._sink.write(fp, title=self.title, fullscreen=self.fullscreen, layout="SinglePage")

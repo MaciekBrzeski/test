@@ -10,11 +10,17 @@
 // fields whose text changed are written on each frame.
 //
 // A game is an object with optional init(px) and update(px, dt)
-// functions, registered with PX.run(game). PX_CONFIG is injected by the
-// Python builder before this script.
+// functions, registered with px.run(game).
+//
+// PXRuntime(cfg) creates one independent instance per game page and
+// registers it as PXR[cfg.id]; field names are prefixed with the id, so
+// several games can live in one document. An instance only runs while its
+// page (cfg.page) is the viewer's current page.
 
-var PX = (function () {
-  var cfg = PX_CONFIG;
+var PXR = {};
+var PX_DOC = this;
+
+function PXRuntime(cfg) {
   var W = cfg.cols, H = cfg.rows, K = cfg.colors;
   var px = {
     W: W, H: H, colors: K, frame: 0, time: 0, paused: false,
@@ -131,7 +137,7 @@ var PX = (function () {
     value = String(value);
     if (hudCache[name] === value) return;
     hudCache[name] = value;
-    var f = getField('hud_' + name);
+    var f = getField(cfg.id + '_hud_' + name);
     if (f) f.value = value;
   };
 
@@ -184,10 +190,16 @@ var PX = (function () {
     flush();
   };
 
+  px.active = function () {
+    return cfg.page === null || cfg.page === undefined || !PX_DOC ||
+      typeof PX_DOC.pageNum !== 'number' || PX_DOC.pageNum === cfg.page;
+  };
+
   px._tick = function () {
     var t = now();
     var dt = Math.min((t - last) / 1000, 0.1);
     last = t;
+    if (!px.active()) return;  // another page is in view: sleep
     if (keyField && keyField.value !== '') keyField.value = '';
     try {
       px.step(dt);
@@ -205,8 +217,9 @@ var PX = (function () {
   px.start = function () {
     if (cfg.keyField) keyField = getField(cfg.keyField);
     last = now();
-    timer = app.setInterval('PX._tick()', Math.max(10, Math.round(1000 / cfg.fps)));
+    timer = app.setInterval('PXR["' + cfg.id + '"]._tick()', Math.max(10, Math.round(1000 / cfg.fps)));
   };
 
+  PXR[cfg.id] = px;
   return px;
-})();
+}

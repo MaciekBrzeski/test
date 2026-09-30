@@ -16,7 +16,8 @@ const KEY_BOX = [255, 248, 208];  // background of the key capture field
 
 (async () => {
   const browser = await chromium.launch({ executablePath: chromiumPath, headless: true,
-                                          args: ['--headless=new'] });
+                                          args: ['--headless=new', '--disable-background-networking',
+                                                  '--disable-component-update', '--no-first-run'] });
   const viewer = await browser.newPage({ viewport: { width: 900, height: 1300 } });
   const scratch = await browser.newPage();
   await viewer.goto('file://' + pdf + '#toolbar=0&view=FitH');
@@ -88,7 +89,16 @@ const KEY_BOX = [255, 248, 208];  // background of the key capture field
     const b = await shot();
     Object.assign(result, await diff(a, b));
   } else if (scenario === 'keys') {
-    const a = await shot();
+    // Under load the first frames and field text can take a while to appear;
+    // start measuring only once two consecutive screenshots agree.
+    let a = await shot();
+    for (let tries = 0; tries < 20; tries++) {
+      await viewer.waitForTimeout(300);
+      const next = await shot();
+      const settled = (await diff(a, next)).changed === 0;
+      a = next;
+      if (settled) break;
+    }
     await viewer.waitForTimeout(600);
     const b = await shot();
     result.idle_changed = (await diff(a, b)).changed;
@@ -102,6 +112,32 @@ const KEY_BOX = [255, 248, 208];  // background of the key capture field
     await viewer.waitForTimeout(600);
     const f = await shot();
     result.paused_changed = (await diff(e, f)).changed;
+  } else if (scenario.startsWith('link:')) {
+    // link:<json> with {bg: [r,g,b], width: canvas px, click: [x, y] canvas px}.
+    // Finds the page on screen by its background colour, clicks the given
+    // point (a link), then checks that the page we land on animates.
+    const spec = JSON.parse(scenario.slice(5));
+    const a = await shot();
+    const box = await scratch.evaluate(([id, rgb]) => {
+      const img = window.shots[id];
+      let x0 = 1e9, y0 = 1e9, x1 = -1;
+      for (let y = 0; y < img.height; y++) for (let x = 0; x < img.width; x++) {
+        const i = (y * img.width + x) * 4;
+        if (Math.abs(img.data[i] - rgb[0]) < 4 && Math.abs(img.data[i + 1] - rgb[1]) < 4 &&
+            Math.abs(img.data[i + 2] - rgb[2]) < 4) {
+          x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y);
+        }
+      }
+      return [x0, y0, x1];
+    }, [a, spec.bg]);
+    const scale = (box[2] - box[0] + 1) / spec.width;
+    await viewer.mouse.click(box[0] + spec.click[0] * scale, box[1] + spec.click[1] * scale);
+    await viewer.waitForTimeout(1500);
+    const b = await shot();
+    result.jumped = (await diff(a, b)).changed;
+    await viewer.waitForTimeout(700);
+    const c = await shot();
+    Object.assign(result, await diff(b, c));
   } else {
     throw new Error('unknown scenario ' + scenario);
   }

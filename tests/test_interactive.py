@@ -27,7 +27,7 @@ def tiny_doc(**display):
     page.hud("score", 10, 150, 100, 20)
     page.key_capture(10, 175, 60, 20)
     page.button("a", 100, 175, 40, 20, label="<")
-    doc.set_game("PX.run({});")
+    page.set_game("PX.run({});")
     return doc
 
 
@@ -38,33 +38,60 @@ def test_fields_and_flags():
     with pikepdf.open(io.BytesIO(doc.to_bytes())) as pdf:
         assert pdf.check_pdf_syntax() == []
         fields = {str(f.T): f for f in pdf.Root.AcroForm.Fields}
-        rows = [n for n in fields if n.startswith("px")]
+        rows = [n for n in fields if n.startswith("g0_px")]
         assert len(rows) == 4 * 2  # rows x (colours - 1)
-        row = fields["px0_1"]
+        row = fields["g0_px0_1"]
         flags = int(row.Ff)
         assert flags & 1                      # read-only: no highlight, no editing
         assert flags & (1 << 24)              # comb: one glyph per cell
         assert int(row.MaxLen) == 8
         assert "/ZaDb" in str(row.DA) and "1 0 0 rg" in str(row.DA)
-        assert [float(v) for v in fields["px0_1"].Rect] == [10, 180, 90, 190]
-        assert [float(v) for v in fields["px3_2"].Rect] == [10, 150, 90, 160]
-        assert int(fields["hud_score"].Ff) & 1
-        keys = fields["keys"]
+        assert [float(v) for v in fields["g0_px0_1"].Rect] == [10, 180, 90, 190]
+        assert [float(v) for v in fields["g0_px3_2"].Rect] == [10, 150, 90, 160]
+        assert int(fields["g0_hud_score"].Ff) & 1
+        keys = fields["g0_keys"]
         assert not int(keys.Ff) & 1           # the capture field must be editable
-        assert "PX._key" in str(keys.AA.K.JS)
-        btn = fields["btn_0"]
+        assert 'PXR["g0"]._key' in str(keys.AA.K.JS)
+        btn = fields["g0_btn_0"]
         assert int(btn.Ff) & (1 << 16)        # push button
-        assert 'PX._down("a")' in str(btn.AA.D.JS) and 'PX._up("a")' in str(btn.AA.U.JS)
+        assert 'PXR["g0"]._down("a")' in str(btn.AA.D.JS)
+        assert 'PXR["g0"]._up("a")' in str(btn.AA.U.JS)
         assert set(pdf.Root.AcroForm.DR.Font.keys()) == {"/Cour", "/Helv", "/ZaDb"}
         js = str(pdf.Root.OpenAction.JS)
-        assert js.startswith("var PX_CONFIG = ") and js.rstrip().endswith("PX.start();")
+        assert js.count("function PXRuntime(") == 1
+        assert 'PXRuntime({"id": "g0", "page": 0' in js and "PX.start();" in js
+
+
+def instance_configs(script: str) -> list[dict]:
+    configs = []
+    for chunk in script.split("var PX = PXRuntime(")[1:]:
+        configs.append(json.loads(chunk.split(");\n", 1)[0]))
+    return configs
 
 
 def test_config_matches_display():
     doc = tiny_doc(cols=5, rows=3, palette=[None, "#fff", "#000", "#f00"])
-    config = json.loads(doc.script().split("\n", 1)[0][len("var PX_CONFIG = "):-1])
+    (config,) = instance_configs(doc.script())
     assert config["cols"] == 5 and config["rows"] == 3 and config["colors"] == 4
-    assert config["glyph"] == "n" and config["keyField"] == "keys"
+    assert config["glyph"] == "n" and config["keyField"] == "g0_keys"
+    assert config["id"] == "g0" and config["page"] == 0
+
+
+def test_several_games_in_one_document():
+    doc = InteractiveDocument(dpi=72)
+    doc.new_page(background=0, size=(100, 100))             # a plain page first
+    for game in ("snake", "fireworks"):
+        page = doc.new_page(background=0, size=(200, 200))
+        page.display(10, 10, 8, 4, 10, [None, "#ff0000"])
+        page.key_capture(10, 175, 60, 20)
+        page.set_game(f"PX.run({{}}); // {game}")
+    script = doc.script()
+    assert script.count("function PXRuntime(") == 1
+    assert [(c["id"], c["page"]) for c in instance_configs(script)] == [("g0", 1), ("g1", 2)]
+    with pikepdf.open(io.BytesIO(doc.to_bytes())) as pdf:
+        names = {str(f.T) for f in pdf.Root.AcroForm.Fields}
+        assert {"g0_px0_1", "g1_px0_1", "g0_keys", "g1_keys"} <= names
+        assert "/Annots" not in pdf.pages[0].obj or len(pdf.pages[0].obj.Annots) == 0
 
 
 def test_builder_validation():
@@ -78,7 +105,9 @@ def test_builder_validation():
         page.display(0, 0, 4, 4, 10, [None, 0], glyph="star")
     page.display(0, 0, 4, 4, 10, [None, 0])
     with pytest.raises(ValueError):
-        page.display(0, 0, 4, 4, 10, [None, 0])  # only one display
+        page.display(0, 0, 4, 4, 10, [None, 0])  # only one display per page
+    with pytest.raises(ValueError):
+        doc.to_bytes()                            # display without a game
     with pytest.raises(ValueError):
         page.button("left", 0, 0, 10, 10)
 
@@ -109,8 +138,8 @@ def test_runtime_is_es5():
 # -- runtime and games, run in node ------------------------------------------
 
 def run_js(tmp_path, game=None, config=None, steps=(), setup=None):
-    cfg = {"cols": 10, "rows": 6, "colors": 4, "prefix": "px", "glyph": "n", "fps": 30,
-           "seed": 5, "holdMs": 150, "pauseKey": "p", "keyField": None}
+    cfg = {"id": "g0", "page": None, "cols": 10, "rows": 6, "colors": 4, "prefix": "px",
+           "glyph": "n", "fps": 30, "seed": 5, "holdMs": 150, "pauseKey": "p", "keyField": None}
     cfg.update(config or {})
     scenario = {"runtime": str(RUNTIME), "config": cfg, "steps": list(steps), "setup": setup,
                 "game": str(GAME_DIR / game) if game else None}
@@ -294,3 +323,13 @@ def test_e2e_snake_responds_to_keys_and_pause(tmp_path):
     assert result["idle_changed"] == 0     # nothing moves before a key is pressed
     assert result["moving_changed"] > 0    # 'd' starts the snake
     assert result["paused_changed"] == 0   # 'p' freezes it
+
+
+@needs_node
+def test_runtime_sleeps_while_its_page_is_not_shown(tmp_path):
+    setup = "PX_DOC = {pageNum: 0}; PX.run({update: function (px) { px.set(0, 0, 1); }});"
+    steps = [{"eval": "PX._tick(); PX.frame"},
+             {"eval": "PX_DOC.pageNum = 3; PX._tick(); PX._tick(); PX.frame"},
+             {"eval": "PX_DOC.pageNum = 2; PX._tick(); PX.frame"}]
+    out = run_js(tmp_path, config={"page": 2}, setup=setup, steps=steps)
+    assert out["results"] == [0, 0, 1]

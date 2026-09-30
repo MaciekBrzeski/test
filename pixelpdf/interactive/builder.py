@@ -1,7 +1,9 @@
 """Build interactive PDF pages: static artwork plus a live, scriptable display.
 
 The page background is an ordinary pixel-exact canvas. On top of it sit
-form fields that the embedded JavaScript runtime drives:
+form fields that the embedded JavaScript runtime drives. Each page with a
+display runs its own game, and only while that page is in view, so one
+document (or a Composer) can hold several games:
 
 - a *display*: `rows x (colors - 1)` read-only comb text fields, each row
   holding glyphs (squares by default) in one palette colour,
@@ -17,7 +19,7 @@ Geometry is given in canvas pixels, like everything else in pixelpdf.
     page.hud("score", x=60, y=120, w=300, h=40)
     page.key_capture(x=60, y=1100, w=300, h=50)
     page.button("a", x=400, y=1100, w=80, h=60, label="<")
-    doc.set_game(js_source)
+    page.set_game(js_source)          # or doc.set_game(...) for the only display
     doc.save("game.pdf")
 """
 
@@ -31,9 +33,8 @@ from pathlib import Path
 from typing import BinaryIO, Optional, Sequence, Union
 
 from ..engine.canvas import Canvas, Color, a4_size, parse_color
-from ..pdf.image import encode_image
-from ..pdf.objects import Name, Ref, Stream, serialize
-from ..pdf.writer import PdfWriter
+from ..pdf.objects import Name, Ref
+from ..pdf.pages import PageSink, image_page
 
 __all__ = ["InteractiveDocument", "InteractivePage", "Display", "GLYPHS", "RUNTIME_JS"]
 
@@ -95,22 +96,25 @@ class InteractivePage:
         self.canvas = canvas
         self.fields: list[_Field] = []
         self.display_spec: Optional[Display] = None
-        self.key_field: Optional[str] = None
+        self.game_js: Optional[str] = None
+        self.has_key_capture = False
 
     def display(self, x: int, y: int, cols: int, rows: int, cell: int,
                 palette: Sequence[Optional[Color]], glyph: str = "square",
                 glyph_scale: float = 1.0) -> Display:
-        """Add the live pixel display (one per document)."""
-        if self.doc._display_page is not None:
-            raise ValueError("an interactive document has exactly one display")
+        """Add this page's live pixel display (one per page)."""
+        if self.display_spec is not None:
+            raise ValueError("a page has one display")
         if glyph not in GLYPHS:
             raise ValueError(f"glyph must be one of {sorted(GLYPHS)}")
         if len(palette) < 2:
             raise ValueError("palette needs index 0 (transparent) and at least one colour")
-        spec = Display(x, y, cols, rows, cell, list(palette), glyph, glyph_scale)
-        self.display_spec = spec
-        self.doc._display_page = self
-        return spec
+        self.display_spec = Display(x, y, cols, rows, cell, list(palette), glyph, glyph_scale)
+        return self.display_spec
+
+    def set_game(self, source: str) -> None:
+        """JavaScript for this page's display; it calls PX.run({init, update})."""
+        self.game_js = source
 
     def hud(self, name: str, x: int, y: int, w: int, h: int, *, value: str = "",
             size: Optional[float] = None, color: Color = "#ffffff", align: str = "left",
@@ -131,9 +135,9 @@ class InteractivePage:
     def key_capture(self, x: int, y: int, w: int, h: int, *, color: Color = "#fff8d0",
                     text_color: Color = "#000000") -> None:
         """The field players click, then type into, to send keys to the game."""
-        if self.key_field is not None:
+        if self.has_key_capture:
             raise ValueError("a page has one key capture field")
-        self.key_field = "keys"
+        self.has_key_capture = True
         self.fields.append(_Field("keys", "keys", (x, y, w, h), dict(
             color=color, text_color=text_color)))
 
@@ -148,8 +152,6 @@ class InteractiveDocument:
         self.hold_ms = hold_ms
         self.pause_key = pause_key
         self.pages: list[InteractivePage] = []
-        self._display_page: Optional[InteractivePage] = None
-        self.game_js: Optional[str] = None
 
     def new_page(self, background: Color = 255, size: Optional[tuple[int, int]] = None,
                  mode: str = "RGB") -> InteractivePage:
@@ -159,22 +161,17 @@ class InteractiveDocument:
         return page
 
     def set_game(self, source: str) -> None:
-        """JavaScript that calls PX.run({init: ..., update: ...})."""
-        self.game_js = source
+        """Set the game of the document's only display page."""
+        displays = [p for p in self.pages if p.display_spec is not None]
+        if len(displays) != 1:
+            raise ValueError("set_game needs exactly one display page; use page.set_game")
+        displays[0].set_game(source)
 
     def script(self) -> str:
-        """The complete document script: config, runtime, game, start."""
-        page = self._display_page
-        if page is None or self.game_js is None:
-            raise ValueError("add a display and set a game before saving")
-        d = page.display_spec
-        config = {
-            "cols": d.cols, "rows": d.rows, "colors": len(d.palette), "prefix": "px",
-            "glyph": GLYPHS[d.glyph], "fps": self.fps, "seed": self.seed,
-            "holdMs": self.hold_ms, "pauseKey": self.pause_key, "keyField": page.key_field,
-        }
-        return ("var PX_CONFIG = " + json.dumps(config) + ";\n" + RUNTIME_JS + "\n"
-                + self.game_js + "\nPX.start();\n")
+        """The complete open-action script this document would carry on its own."""
+        sink = PageSink()
+        self.emit(sink)
+        return "\n".join(sink.scripts.values())
 
     # -- output --------------------------------------------------------------
 
@@ -191,60 +188,61 @@ class InteractiveDocument:
         return buf.getvalue()
 
     def _write(self, fp: BinaryIO) -> None:
+        sink = PageSink()
+        self.emit(sink)
+        sink.write(fp, title=self.title)
+
+    def emit(self, sink: PageSink) -> list[int]:
+        """Append this document's pages, fields and scripts to `sink`; returns page indices."""
         if not self.pages:
             raise ValueError("document has no pages")
-        script = self.script()
-        w = PdfWriter()
-        catalog, pages_root = w.reserve(), w.reserve()
-        fonts = {
-            "Cour": w.add(_font("Courier-Bold")),
-            "Helv": w.add(_font("Helvetica-Bold")),
-            "ZaDb": w.add({"Type": Name("Font"), "Subtype": Name("Type1"),
-                           "BaseFont": Name("ZapfDingbats")}),
-        }
-        kids, all_fields = [], []
         for page in self.pages:
-            page_ref = w.reserve()
-            annots = [w.add(a) for a in self._annotations(page, page_ref)]
-            all_fields.extend(annots)
-            height = page.canvas.height
-            s = 72 / self.dpi
-            content = b"q %s 0 0 %s 0 0 cm /Im0 Do Q" % (
-                serialize(page.canvas.width * s), serialize(height * s))
-            w.set(page_ref, {
-                "Type": Name("Page"), "Parent": pages_root,
-                "MediaBox": [0, 0, page.canvas.width * s, height * s],
-                "Resources": {"XObject": {"Im0": w.add(encode_image(page.canvas.pixels))}},
-                "Contents": w.add(Stream({}, content)),
-                "Annots": annots,
-            })
-            kids.append(page_ref)
-        w.set(pages_root, {"Type": Name("Pages"), "Kids": kids, "Count": len(kids)})
-        w.set(catalog, {
-            "Type": Name("Catalog"), "Pages": pages_root,
-            "AcroForm": {"Fields": all_fields, "DR": {"Font": fonts}, "DA": "/Helv 12 Tf 0 g"},
-            "OpenAction": {"S": Name("JavaScript"), "JS": script},
-        })
-        info = {"Producer": "pixelpdf"}
-        if self.title:
-            info["Title"] = self.title
-        w.write(fp, catalog, w.add(info))
+            if page.display_spec is not None and page.game_js is None:
+                raise ValueError("every display needs a game: call page.set_game(...)")
+        if not any(p.display_spec is not None for p in self.pages):
+            raise ValueError("add a display (page.display(...)) before saving")
+        sink.add_script("pixelpdf-runtime", RUNTIME_JS)
+        indices = []
+        for page in self.pages:
+            index = len(sink)
+            game_id = f"g{sum(k.startswith('game:') for k in sink.scripts)}"
+            page_ref = image_page(sink, page.canvas.pixels, self.dpi)
+            annots = [sink.writer.add(a) for a in self._annotations(page, page_ref, game_id)]
+            sink.page(index)[1]["Annots"] = annots
+            sink.fields.extend(annots)
+            if page.display_spec is not None:
+                sink.add_script(f"game:{game_id}", self._instance_script(page, game_id, index))
+            indices.append(index)
+        return indices
+
+    def _instance_script(self, page: InteractivePage, game_id: str, index: int) -> str:
+        d = page.display_spec
+        config = {
+            "id": game_id, "page": index, "cols": d.cols, "rows": d.rows,
+            "colors": len(d.palette), "prefix": f"{game_id}_px", "glyph": GLYPHS[d.glyph],
+            "fps": self.fps, "seed": self.seed, "holdMs": self.hold_ms,
+            "pauseKey": self.pause_key,
+            "keyField": f"{game_id}_keys" if page.has_key_capture else None,
+        }
+        return ("(function () {\nvar PX = PXRuntime(" + json.dumps(config) + ");\n"
+                + page.game_js + "\nPX.start();\n})();")
 
     def _rect(self, page: InteractivePage, x: float, y: float, w: float, h: float) -> list[float]:
         s = 72 / self.dpi
         top = page.canvas.height
         return [x * s, (top - y - h) * s, (x + w) * s, (top - y) * s]
 
-    def _annotations(self, page: InteractivePage, page_ref: Ref) -> list[dict]:
+    def _annotations(self, page: InteractivePage, page_ref: Ref, game_id: str) -> list[dict]:
         s = 72 / self.dpi
         out = []
         d = page.display_spec
+        runtime = f'PXR["{game_id}"]'
         if d is not None:
             size = d.cell * s * 1.2 * d.glyph_scale
             for r in range(d.rows):
                 rect = self._rect(page, d.x, d.y + r * d.cell, d.width, d.cell)
                 for k in range(1, len(d.palette)):
-                    out.append(_widget(page_ref, f"px{r}_{k}", rect, {
+                    out.append(_widget(page_ref, f"{game_id}_px{r}_{k}", rect, {
                         "FT": Name("Tx"), "V": "", "MaxLen": d.cols,
                         "Ff": _READ_ONLY | _COMB | _DO_NOT_SCROLL | _DO_NOT_SPELL_CHECK,
                         "DA": _da("ZaDb", round(size, 2), d.palette[k]),
@@ -252,36 +250,33 @@ class InteractiveDocument:
         for f in page.fields:
             rect = self._rect(page, *f.rect)
             spec = f.spec
+            name = f"{game_id}_{f.name}"
             if f.kind == "hud":
                 size = spec["size"] or round(f.rect[3] * s * 0.7, 1)
                 font = "Cour" if spec["font"] == "mono" else "Helv"
-                out.append(_widget(page_ref, f.name, rect, {
+                out.append(_widget(page_ref, name, rect, {
                     "FT": Name("Tx"), "V": spec["value"], "Ff": _READ_ONLY | _DO_NOT_SCROLL,
                     "DA": _da(font, size, spec["color"]),
                     "Q": {"left": 0, "center": 1, "right": 2}[spec["align"]],
                 }))
             elif f.kind == "button":
                 key = json.dumps(spec["key"])
-                out.append(_widget(page_ref, f.name, rect, {
+                out.append(_widget(page_ref, name, rect, {
                     "FT": Name("Btn"), "Ff": _PUSH_BUTTON,
                     "DA": _da("Helv", round(f.rect[3] * s * 0.5, 1), spec["text_color"]),
                     "MK": {"BG": _rgb(spec["color"]), "CA": spec["label"]},
-                    "AA": {"D": _js(f"PX._down({key});"), "U": _js(f"PX._up({key});"),
-                           "X": _js(f"PX._up({key});")},
+                    "AA": {"D": _js(f"{runtime}._down({key});"), "U": _js(f"{runtime}._up({key});"),
+                           "X": _js(f"{runtime}._up({key});")},
                 }))
             elif f.kind == "keys":
-                out.append(_widget(page_ref, f.name, rect, {
+                out.append(_widget(page_ref, name, rect, {
                     "FT": Name("Tx"), "V": "", "Ff": _DO_NOT_SCROLL | _DO_NOT_SPELL_CHECK,
                     "DA": _da("Cour", round(f.rect[3] * s * 0.5, 1), spec["text_color"]),
                     "MK": {"BG": _rgb(spec["color"])},
-                    "AA": {"K": _js("if (!event.willCommit) PX._key(event.change); event.change = '';")},
+                    "AA": {"K": _js(f"if (!event.willCommit) {runtime}._key(event.change); "
+                                    "event.change = '';")},
                 }))
         return out
-
-
-def _font(base: str) -> dict:
-    return {"Type": Name("Font"), "Subtype": Name("Type1"), "BaseFont": Name(base),
-            "Encoding": Name("WinAnsiEncoding")}
 
 
 def _js(source: str) -> dict:

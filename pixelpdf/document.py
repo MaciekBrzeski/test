@@ -25,9 +25,7 @@ import os
 from typing import BinaryIO, Union
 
 from .engine.canvas import Canvas, Color, a4_size
-from .pdf.image import encode_image
-from .pdf.objects import Name, Stream, serialize
-from .pdf.writer import PdfWriter
+from .pdf.pages import PageSink, image_page
 
 __all__ = ["Document", "Page"]
 
@@ -82,30 +80,7 @@ class Document:
         return buf.getvalue()
 
     def _write(self, fp: BinaryIO) -> None:
-        if not self.pages:
-            raise ValueError("document has no pages")
-        w = PdfWriter()
-        catalog = w.reserve()
-        pages_root = w.reserve()
-
-        kids = []
+        sink = PageSink()
         for page in self.pages:
-            width_pt, height_pt = page.size_points
-            image = w.add(encode_image(page.canvas.pixels, level=self.compression))
-            content = b"q %s 0 0 %s 0 0 cm /Im0 Do Q" % (
-                serialize(width_pt), serialize(height_pt))
-            kids.append(w.add({
-                "Type": Name("Page"),
-                "Parent": pages_root,
-                "MediaBox": [0, 0, width_pt, height_pt],
-                "Resources": {"XObject": {"Im0": image}},
-                "Contents": w.add(Stream({}, content)),
-            }))
-
-        w.set(pages_root, {"Type": Name("Pages"), "Kids": kids, "Count": len(kids)})
-        w.set(catalog, {"Type": Name("Catalog"), "Pages": pages_root})
-        info = {"Producer": "pixelpdf"}
-        if self.title:
-            info["Title"] = self.title
-        w.write(fp, catalog, w.add(info))
-
+            image_page(sink, page.canvas.pixels, self.dpi, compression=self.compression)
+        sink.write(fp, title=self.title)

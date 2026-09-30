@@ -5,7 +5,12 @@ engine draws shapes, bitmap text with animated effects, 2D lighting with
 shadows, particles and spinners, and the PDF writer stores the result
 losslessly on A4 pages. Animations can be exported as flipbook PDFs that
 play frame by frame, and interactive PDFs run games and simulations live
-in the viewer's JavaScript engine.
+in the viewer's JavaScript engine. `Composer` mixes all of these in one
+file.
+
+**Try it:** `python demos/showcase.py` writes `out/showcase.pdf`, a 44-page
+tour with a cover, pixel-exact art, the engine, a 36-frame flipbook, three
+playable games and a viewer-support table.
 
 ## How it works
 
@@ -226,6 +231,64 @@ Chrome's.
 - **macOS Preview, most mobile apps, printers:** show the static page with
   an empty display.
 
+## Mixing everything: Composer
+
+```python
+from pixelpdf import Composer
+from pixelpdf.interactive import InteractiveDocument
+from pixelpdf.interactive.games import add_game_page
+
+book = Composer(title="Mixed")                      # A4, 144 DPI
+cover = book.add_canvas(cover_canvas)              # static page, pixel-exact
+
+anim = book.flipbook(fps=12)                       # frames become the next pages
+for i in range(24):
+    frame = anim.new_frame()
+    draw(frame, i / 12)
+    anim.add_frame(frame)
+
+games = InteractiveDocument()
+add_game_page(games, "snake")
+add_game_page(games, "fireworks")
+snake, fireworks = book.add_interactive(games)     # page indices
+
+book.link(cover, (100, 900, 500, 60), fireworks)   # clickable area, canvas pixels
+book.bookmark("Fireworks", fireworks)              # viewer sidebar outline
+book.save("mixed.pdf")
+```
+
+- **Page order:** pages appear in the order they're added.
+  `add_canvas(..., duration=, transition=)` makes a static page timed, like
+  a flipbook frame.
+- **Several games per file:** every game page gets its own runtime
+  instance. Field names are prefixed with its id (`g0_`, `g1_`, ...) and
+  the runtime is included only once.
+- **Games sleep off-screen:** each instance only runs while
+  `doc.pageNum` is its page, so games don't use CPU while you read other
+  pages. In the showcase, Fireworks reads `SPARKS 0` when you arrive,
+  because it hasn't run yet.
+- **Full screen is off by default.** Acrobat only auto-advances flipbook
+  frames in full screen mode. Turning it on for the whole document would
+  also take over the static and game pages, so the showcase asks readers
+  to press Ctrl+L at the flipbook instead. Pass `fullscreen=True` to force
+  it.
+
+## Viewer support
+
+| Feature | Chrome / Edge | Acrobat / Reader | Firefox | Preview, mobile |
+|---|---|---|---|---|
+| Pixel-exact pages | tested | expected | expected | expected |
+| Flipbook auto-play | pages only | expected (full screen) | untested | pages only |
+| Games (JavaScript) | tested | expected | untested | no |
+| Links, bookmarks | tested | expected | expected | expected |
+
+- **Tested:** checked by this repository's tests in headless Chromium
+  (PDFium).
+- **Expected:** a standard PDF feature that viewer documents, but not run
+  here.
+- **Pages only:** frames show as ordinary pages you scroll through.
+- **Untested:** partial support is likely but not verified.
+
 ## Demos
 
 ```bash
@@ -234,6 +297,7 @@ python demos/static_page.py                          # out/static_page.pdf
 python demos/engine_showcase.py --frames out/frames  # out/engine_showcase.pdf + PNGs
 python demos/flipbook_demo.py                        # out/flipbook.pdf
 python demos/games.py                                # out/snake.pdf, breakout.pdf, fireworks.pdf
+python demos/showcase.py                             # out/showcase.pdf: everything in one file
 ```
 
 - **`static_page`:** a gradient, a colour wheel, a Phong-lit sphere, a
@@ -254,6 +318,13 @@ python demos/games.py                                # out/snake.pdf, breakout.p
 - **`games`:** Snake, Breakout (with levels and lives) and Fireworks (a
   particle toy with gravity, wind, drag and bouncing sparks). Each is a
   one-page A4 PDF of 130–190 KB.
+- **`showcase`:** 44 pages, about 8 MB, built in about 20 s.
+  - A cover with a rendered scene and clickable contents.
+  - The pixel-exact art page and the engine page.
+  - A flipbook intro page followed by 36 frames.
+  - The three games, each on its own page.
+  - A viewer-support table.
+  - Bookmarks for every section.
 
 ## Tests
 
@@ -282,6 +353,13 @@ python -m pytest
     fireworks particle bounds.
   - Chromium's PDF viewer runs the real files (`tests/js/e2e.js`): the
     display must animate, respond to typed keys and freeze on pause.
+- **Composer:**
+  - Page order and page kinds; static and flipbook pages must render
+    pixel-exactly.
+  - One runtime with several game instances, each with its page index.
+  - Links, bookmarks and the full-screen option.
+  - In Chromium: clicking a link must jump to a game page that is
+    running.
 
 ## Layout
 
@@ -301,7 +379,9 @@ pixelpdf/
   engine/filters.py  blur, resize, smoothstep
   engine/png.py    PNG export
   document.py      Document / Page API
+  pdf/pages.py     PageSink: pages, fields, scripts, links, bookmarks for one file
   flipbook.py      Flipbook: keyframes + dirty-rect patches, /Dur + /Trans pages
+  compose.py       Composer: static, flipbook and interactive pages in one PDF
   interactive/builder.py  form-field display, HUD, buttons, key capture, script
   interactive/runtime.js  in-viewer runtime (ES5): framebuffer, input, main loop
   interactive/games.py    built-in games laid out as A4 pages
@@ -319,4 +399,4 @@ tests/
    `/Trans`), shared keyframes, dirty-rectangle patches and deduplication.
 4. ✅ **Interactive backend:** embedded JavaScript games and simulations,
    rendered to a grid of form fields (Chrome/Edge; Acrobat untested).
-5. **Showcase PDF** and a table of which viewer supports what.
+5. ✅ **Showcase PDF** and a table of which viewer supports what.
