@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixelpdf"
+version = "0.1.0"
+description = "Generate PDF documents where every pixel is set programmatically"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pikepdf", "pypdfium2"]
+
+[tool.setuptools.packages.find]
+include = ["pixelpdf*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
