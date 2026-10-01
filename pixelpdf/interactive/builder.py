@@ -27,21 +27,25 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Optional, Sequence, Union
 
 from ..engine.canvas import Canvas, Color, a4_size, parse_color
-from ..pdf.objects import Name, Ref
+from ..pdf.objects import Name, Ref, Stream, serialize
 from ..pdf.pages import PageSink, image_page
 
-__all__ = ["InteractiveDocument", "InteractivePage", "Display", "GLYPHS", "RUNTIME_JS"]
+__all__ = ["InteractiveDocument", "InteractivePage", "Display", "GLYPHS", "UNICODE_GLYPHS",
+           "RUNTIME_JS"]
 
 RUNTIME_JS = (Path(__file__).parent / "runtime.js").read_text(encoding="ascii")
 
 # ZapfDingbats characters: n = black square, l = black circle, u = black diamond.
 GLYPHS = {"square": "n", "dot": "l", "diamond": "u"}
+# The same shapes in Unicode, for viewers that draw fields with web fonts (pdf.js).
+UNICODE_GLYPHS = {"square": "\u25a0", "dot": "\u25cf", "diamond": "\u25c6"}
 
 _READ_ONLY = 1
 _DO_NOT_SPELL_CHECK = 1 << 22
@@ -49,6 +53,26 @@ _DO_NOT_SCROLL = 1 << 23
 _COMB = 1 << 24
 _PUSH_BUTTON = 1 << 16
 _PRINT = 4  # annotation flag: show when printing too
+
+# Helvetica-Bold advance widths (1/1000 em) from the standard AFM metrics,
+# for centring button labels. Characters not listed use 611.
+_HELV_BOLD = {
+    " ": 278, "!": 333, "+": 584, ",": 278, "-": 333, ".": 278, "/": 278, ":": 333,
+    "<": 584, "=": 584, ">": 584, "?": 611, "^": 584, "_": 556, "|": 280,
+    **{d: 556 for d in "0123456789"},
+    "A": 722, "B": 722, "C": 722, "D": 722, "E": 667, "F": 611, "G": 778, "H": 722,
+    "I": 278, "J": 556, "K": 722, "L": 611, "M": 833, "N": 722, "O": 778, "P": 667,
+    "Q": 778, "R": 722, "S": 667, "T": 611, "U": 722, "V": 667, "W": 944, "X": 667,
+    "Y": 667, "Z": 611,
+    "a": 556, "b": 611, "c": 556, "d": 611, "e": 556, "f": 333, "g": 611, "h": 611,
+    "i": 278, "j": 278, "k": 556, "l": 278, "m": 889, "n": 611, "o": 611, "p": 611,
+    "q": 611, "r": 389, "s": 556, "t": 333, "u": 611, "v": 556, "w": 778, "x": 556,
+    "y": 556, "z": 500,
+}
+
+
+def _label_width(label: str, font_size: float) -> float:
+    return sum(_HELV_BOLD.get(ch, 611) for ch in label) * font_size / 1000
 
 
 def _rgb(color, channels: int = 3) -> list[float]:
@@ -207,7 +231,7 @@ class InteractiveDocument:
             index = len(sink)
             game_id = f"g{sum(k.startswith('game:') for k in sink.scripts)}"
             page_ref = image_page(sink, page.canvas.pixels, self.dpi)
-            annots = [sink.writer.add(a) for a in self._annotations(page, page_ref, game_id)]
+            annots = [sink.writer.add(a) for a in self._annotations(sink, page, page_ref, game_id)]
             sink.page(index)[1]["Annots"] = annots
             sink.fields.extend(annots)
             if page.display_spec is not None:
@@ -215,11 +239,32 @@ class InteractiveDocument:
             indices.append(index)
         return indices
 
+    @staticmethod
+    def _button_appearance(sink: PageSink, rect: list[float], spec: dict, font_size: float) -> Ref:
+        """Form XObject: filled background with the label centred in Helvetica-Bold."""
+        w, h = rect[2] - rect[0], rect[3] - rect[1]
+        label = spec["label"]
+        text_w = _label_width(label, font_size)
+        if text_w > w * 0.9:  # shrink labels that would not fit
+            font_size = math.floor(font_size * w * 0.9 / text_w * 100) / 100
+            text_w = _label_width(label, font_size)
+        r, g, b = _rgb(spec["color"])
+        tr, tg, tb = _rgb(spec["text_color"])
+        ops = (f"{r:g} {g:g} {b:g} rg 0 0 {w:.2f} {h:.2f} re f "
+               f"BT /Helv {font_size:g} Tf {tr:g} {tg:g} {tb:g} rg "
+               f"{(w - text_w) / 2:.2f} {(h - font_size * 0.7) / 2:.2f} Td ")
+        content = ops.encode("ascii") + serialize(label) + b" Tj ET"
+        return sink.writer.add(Stream({
+            "Type": Name("XObject"), "Subtype": Name("Form"), "BBox": [0, 0, w, h],
+            "Resources": {"Font": {"Helv": sink.form_fonts()["Helv"]}},
+        }, content))
+
     def _instance_script(self, page: InteractivePage, game_id: str, index: int) -> str:
         d = page.display_spec
         config = {
             "id": game_id, "page": index, "cols": d.cols, "rows": d.rows,
             "colors": len(d.palette), "prefix": f"{game_id}_px", "glyph": GLYPHS[d.glyph],
+            "unicodeGlyph": UNICODE_GLYPHS[d.glyph],
             "fps": self.fps, "seed": self.seed, "holdMs": self.hold_ms,
             "pauseKey": self.pause_key,
             "keyField": f"{game_id}_keys" if page.has_key_capture else None,
@@ -232,7 +277,8 @@ class InteractiveDocument:
         top = page.canvas.height
         return [x * s, (top - y - h) * s, (x + w) * s, (top - y) * s]
 
-    def _annotations(self, page: InteractivePage, page_ref: Ref, game_id: str) -> list[dict]:
+    def _annotations(self, sink: PageSink, page: InteractivePage, page_ref: Ref,
+                     game_id: str) -> list[dict]:
         s = 72 / self.dpi
         out = []
         d = page.display_spec
@@ -261,10 +307,14 @@ class InteractiveDocument:
                 }))
             elif f.kind == "button":
                 key = json.dumps(spec["key"])
+                font_size = round(f.rect[3] * s * 0.5, 1)
                 out.append(_widget(page_ref, name, rect, {
                     "FT": Name("Btn"), "Ff": _PUSH_BUTTON,
-                    "DA": _da("Helv", round(f.rect[3] * s * 0.5, 1), spec["text_color"]),
+                    "DA": _da("Helv", font_size, spec["text_color"]),
                     "MK": {"BG": _rgb(spec["color"]), "CA": spec["label"]},
+                    # Explicit appearance: viewers that don't generate one from
+                    # MK (pdf.js, Preview, printing) still show the button.
+                    "AP": {"N": self._button_appearance(sink, rect, spec, font_size)},
                     "AA": {"D": _js(f"{runtime}._down({key});"), "U": _js(f"{runtime}._up({key});"),
                            "X": _js(f"{runtime}._up({key});")},
                 }))

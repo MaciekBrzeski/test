@@ -22,8 +22,11 @@ built from a numpy framebuffer:
 - **Crisp.** `/Interpolate false` asks viewers not to blur pixels when they
   zoom.
 - **Exact mapping.** The page size comes from the pixel size: 1 px = 72/dpi
-  pt. The default of **144 DPI** gives an A4 page of **1191×1684 px**
-  (595.5×842 pt, 210.1×297.0 mm).
+  pt. The default of **144 DPI** gives an A4 page of **1190×1684 px**:
+  the conventional 595×842 pt A4 page (209.9×297.0 mm).
+- **Whole points.** Chrome's viewer sizes pages in whole points, so a
+  page of, say, 595.5 pt gets drawn 1 px narrower and resampled. Keep
+  custom page sizes to whole points (`width_px * 72 / dpi` an integer).
 
 Use a DPI of the form 72·2ᵏ (72, 144, 288, …). With these, page sizes are
 exact in the 32-bit floats viewers use, and a render at zoom `dpi/72` is
@@ -224,10 +227,14 @@ Scripts are ES5, because Acrobat's JavaScript engine is older than
 Chrome's.
 
 **Viewer support**
-- **Chrome and Edge:** tested here with headless Chromium.
+- **Chrome and Edge:** tested by the Playwright suite in Chrome's viewer.
+- **Firefox:** its PDF engine, pdf.js, is tested by the Playwright suite.
+  pdf.js draws form fields with web fonts rather than the field's own
+  font, so the runtime switches to Unicode glyphs (■ ● ◆) when
+  `app.viewerType` is `PDF.js`. pdf.js also only draws buttons that have
+  an appearance stream, so the builder writes one for every button.
 - **Adobe Acrobat and Reader:** the fields, fonts and JavaScript calls used
   are standard Acrobat features, but untested here.
-- **Firefox:** pdf.js runs only part of the Acrobat API; untested.
 - **macOS Preview, most mobile apps, printers:** show the static page with
   an empty display.
 
@@ -275,19 +282,20 @@ book.save("mixed.pdf")
 
 ## Viewer support
 
-| Feature | Chrome / Edge | Acrobat / Reader | Firefox | Preview, mobile |
+| Feature | Chrome / Edge | Firefox | Acrobat / Reader | Preview, mobile |
 |---|---|---|---|---|
-| Pixel-exact pages | tested | expected | expected | expected |
-| Flipbook auto-play | pages only | expected (full screen) | untested | pages only |
-| Games (JavaScript) | tested | expected | untested | no |
-| Links, bookmarks | tested | expected | expected | expected |
+| Pixel-exact pages | tested | tested (pdf.js) | expected | expected |
+| Flipbook auto-play | pages only (tested) | pages only (tested, pdf.js) | expected (full screen) | pages only |
+| Games (JavaScript) | tested | tested (pdf.js) | expected | no |
+| Links | tested | tested (pdf.js) | expected | expected |
 
-- **Tested:** checked by this repository's tests in headless Chromium
-  (PDFium).
+- **Tested:** checked by the Playwright suite (see Tests) in that viewer.
+- **Tested (pdf.js):** Firefox's PDF engine, pdf.js, checked by the
+  Playwright suite in Chromium. The `firefox` project runs the same checks
+  in Firefox itself wherever Playwright's Firefox can be installed.
 - **Expected:** a standard PDF feature that viewer documents, but not run
   here.
 - **Pages only:** frames show as ordinary pages you scroll through.
-- **Untested:** partial support is likely but not verified.
 
 ## Demos
 
@@ -328,9 +336,54 @@ python demos/showcase.py                             # out/showcase.pdf: everyth
 
 ## Tests
 
+Three suites:
+
 ```bash
-python -m pytest
+pip install -e .[dev] && npm install      # Python and Node test dependencies
+
+npm run test:py        # pytest + line coverage (fails under 90%)
+npm run coverage:js    # runtime/game JavaScript coverage via c8 (fails under 90%)
+npm run e2e            # Playwright, all browser projects
+npm run e2e:chromium   # ...or one project
+npx playwright install firefox && npm run e2e:firefox
 ```
+
+**Coverage**
+
+| Code | Lines | Measured by |
+|---|---|---|
+| Python package (`pixelpdf/`) | 96% | `pytest --cov` |
+| Runtime and games (`*.js`) | 99% (90% of branches) | c8 over the Node harness runs |
+
+**Browser end-to-end (Playwright).** `playwright.config.js` defines three
+projects that run the same 13 specs:
+
+| Project | Viewer | Runs here |
+|---|---|---|
+| `chromium` | Chrome's built-in PDF viewer (PDFium) | yes |
+| `pdfjs` | pdf.js, Firefox's PDF engine, with forms and scripting, hosted in Chromium (`e2e/pdfjs/viewer.html`) | yes |
+| `firefox` | Firefox's built-in viewer | when `npx playwright install firefox` works; otherwise every test reports as skipped |
+
+The cases, each checked per viewer against `e2e/support.js`:
+
+| Spec | Case |
+|---|---|
+| `static` | page shown 1:1 at 150% zoom; flat colours exact; 1-px checkerboard and random noise pixel-exact |
+| `flipbook` | first frame as drawn; frames do *not* auto-advance in browsers; scrolling shows every frame in order |
+| `games` | Fireworks animates and its HUD updates; display cells land in their layout cells; typed keys steer Snake and P pauses it; holding an on-screen button moves Breakout's paddle; buttons are drawn |
+| `compose` | a link jumps to its target page; a game sleeps while its page is out of view |
+
+How the specs work:
+- **Fixtures:** `e2e/build_fixtures.py` writes purpose-built PDFs and a
+  JSON description of their layout. Every fixture page has magenta
+  markers in its top corners, so a spec can map canvas pixels to screen
+  pixels exactly.
+- **Settling:** a spec waits for the page position to stop changing before
+  it measures.
+- **Retries:** key presses and button holds are retried only if their
+  effect never appears.
+
+**Unit and integration (pytest)**
 
 - **Round-trip:** images are decoded by qpdf (through `pikepdf`) and must
   match byte for byte.
@@ -351,15 +404,11 @@ python -m pytest
     (`tests/js/harness.js`): drawing, which fields get rewritten, input,
     pause, snake eating and crashing, breakout with an autopilot paddle,
     fireworks particle bounds.
-  - Chromium's PDF viewer runs the real files (`tests/js/e2e.js`): the
-    display must animate, respond to typed keys and freeze on pause.
 - **Composer:**
   - Page order and page kinds; static and flipbook pages must render
     pixel-exactly.
   - One runtime with several game instances, each with its page index.
   - Links, bookmarks and the full-screen option.
-  - In Chromium: clicking a link must jump to a game page that is
-    running.
 
 ## Layout
 
@@ -386,6 +435,8 @@ pixelpdf/
   interactive/runtime.js  in-viewer runtime (ES5): framebuffer, input, main loop
   interactive/games.py    built-in games laid out as A4 pages
   interactive/games/*.js  snake, breakout, fireworks
+e2e/                    Playwright specs, fixtures, pdf.js host page
+tests/                  pytest suites; tests/js/harness.js runs JS in Node
 demos/             runnable examples
 tests/
 ```

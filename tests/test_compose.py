@@ -1,5 +1,4 @@
 import io
-import json
 
 import numpy as np
 import pytest
@@ -7,10 +6,8 @@ import pytest
 from pixelpdf import Canvas
 from pixelpdf.compose import Composer
 from pixelpdf.interactive import InteractiveDocument
-from pixelpdf.interactive.games import add_game_page
 
 from .conftest import render_page
-from .test_interactive import needs_chromium, run_e2e
 
 pikepdf = pytest.importorskip("pikepdf")
 
@@ -110,24 +107,3 @@ def test_composer_validation():
     anim.add_frame(anim.new_frame())
     with pytest.raises(ValueError):
         anim.save(io.BytesIO())                   # composed flipbooks save via the composer
-
-
-# -- end to end, in Chromium's PDF viewer ------------------------------------
-
-@needs_chromium
-def test_e2e_link_jumps_to_a_running_game(tmp_path):
-    book = Composer(dpi=144)
-    cover = Canvas(1191, 1684, background="#203040")
-    cover.fill_rect(100, 100, 400, 200, "#e4572e")          # the link area
-    book.add_canvas(cover)
-    games = InteractiveDocument(dpi=144)
-    add_game_page(games, "fireworks")
-    (target,) = book.add_interactive(games)
-    book.link(0, (100, 100, 400, 200), target)
-    pdf = tmp_path / "linked.pdf"
-    book.save(pdf)
-
-    spec = {"bg": [32, 48, 64], "width": 1191, "click": [300, 200]}
-    result = run_e2e(pdf, "link:" + json.dumps(spec), tmp_path)
-    assert result["jumped"] > 10000     # the view changed to another page
-    assert result["changed"] > 50       # and the game there is running

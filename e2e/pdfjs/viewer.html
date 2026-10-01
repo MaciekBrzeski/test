@@ -1,0 +1,49 @@
+<!doctype html>
+<!--
+  Hosts pdf.js, the PDF engine Firefox uses, with forms and JavaScript
+  enabled, so its rendering and scripting can be tested in any browser.
+  Usage: /e2e/pdfjs/viewer.html?file=<url>&zoom=<page-width|number>
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/node_modules/pdfjs-dist/legacy/web/pdf_viewer.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #525659; }
+  #viewerContainer { position: absolute; inset: 0; overflow: auto; }
+</style>
+</head>
+<body>
+<div id="viewerContainer"><div id="viewer" class="pdfViewer"></div></div>
+<script type="module">
+  import * as pdfjsLib from '/node_modules/pdfjs-dist/legacy/build/pdf.mjs';
+  import { EventBus, PDFLinkService, PDFScriptingManager, PDFViewer } from '/node_modules/pdfjs-dist/legacy/web/pdf_viewer.mjs';
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = '/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs';
+  const params = new URLSearchParams(location.search);
+  const container = document.getElementById('viewerContainer');
+  const eventBus = new EventBus();
+  const linkService = new PDFLinkService({ eventBus });
+  const scriptingManager = new PDFScriptingManager({
+    eventBus, sandboxBundleSrc: '/node_modules/pdfjs-dist/legacy/build/pdf.sandbox.mjs',
+    wasmUrl: '/node_modules/pdfjs-dist/wasm/',
+  });
+  const viewer = new PDFViewer({ container, eventBus, linkService, scriptingManager,
+                                 annotationMode: pdfjsLib.AnnotationMode.ENABLE_FORMS });
+  linkService.setViewer(viewer);
+  scriptingManager.setViewer(viewer);
+  eventBus.on('pagesinit', () => { viewer.currentScaleValue = params.get('zoom') || 'page-width'; });
+  window.pdfjsState = { ready: false, page: 1 };
+  eventBus.on('pagechanging', (e) => { window.pdfjsState.page = e.pageNumber; });
+  eventBus.on('pagerendered', () => { window.pdfjsState.ready = true; });
+
+  const doc = await pdfjsLib.getDocument({
+    url: params.get('file'), wasmUrl: '/node_modules/pdfjs-dist/wasm/',
+    cMapUrl: '/node_modules/pdfjs-dist/cmaps/', standardFontDataUrl: '/node_modules/pdfjs-dist/standard_fonts/',
+  }).promise;
+  viewer.setDocument(doc);
+  linkService.setDocument(doc, null);
+  window.pdfViewer = viewer;
+</script>
+</body>
+</html>

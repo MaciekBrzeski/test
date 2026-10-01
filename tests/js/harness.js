@@ -23,12 +23,16 @@ function makeField(name) {
   };
 }
 global.getField = (name) => fields[name] || (fields[name] = makeField(name));
-global.app = { setInterval: () => 1, clearInterval: () => {} };
+// Timers are recorded, not run: tests drive frames with PX.step / PX._tick.
+global.app = { intervals: [], setInterval: (expr, ms) => { app.intervals.push([expr, ms]); return 1; },
+               clearInterval: () => {} };
+if (scenario.viewerType) global.app.viewerType = scenario.viewerType;
 
 vm.runInThisContext('var PX_CONFIG = ' + JSON.stringify(scenario.config) + ';');
-vm.runInThisContext(fs.readFileSync(scenario.runtime, 'utf8'));
+// Filenames let V8 coverage (c8) attribute executed lines to the real files.
+vm.runInThisContext(fs.readFileSync(scenario.runtime, 'utf8'), { filename: scenario.runtime });
 vm.runInThisContext('var PX = PXRuntime(PX_CONFIG);');
-if (scenario.game) vm.runInThisContext(fs.readFileSync(scenario.game, 'utf8'));
+if (scenario.game) vm.runInThisContext(fs.readFileSync(scenario.game, 'utf8'), { filename: scenario.game });
 if (scenario.setup) vm.runInThisContext(scenario.setup);
 
 const results = [];

@@ -1,21 +1,23 @@
 """High-level API: a document made of pixel-exact pages.
 
     doc = Document()               # 144 DPI by default
-    page = doc.new_page()          # A4 canvas, 1191x1684 px
+    page = doc.new_page()          # A4 canvas, 1190x1684 px (595x842 pt)
     page.canvas.set_pixel(10, 10, "#ff0000")
     doc.save("out.pdf")
 
 Each page's canvas is embedded losslessly as one image covering the whole
 page. The page size is derived from the pixel size (1 px = 72/dpi pt), so
-pixels map onto the page exactly; for A4 this differs from the nominal
-210x297 mm by under 0.3 mm.
+pixels map onto the page exactly. A4 is the conventional 595 x 842 pt
+page (209.9 x 297.0 mm).
 
 Prefer a DPI of 72 * 2**k (72, 144, 288, ...). Then 1 px is a binary
 fraction of a point, page sizes are exact in the 32-bit floats viewers
 use, and a render at zoom dpi/72 is pixel-for-pixel identical to the
 canvas. Other DPIs (e.g. 150, 300) still embed exact pixel data, but
 viewers may round the page to one device pixel more or fewer and
-resample the image slightly.
+resample the image slightly. For Chrome's viewer, also keep custom page
+sizes to whole points (width_px * 72 / dpi an integer): it rounds pages
+to whole points and resamples the rest.
 """
 
 from __future__ import annotations

@@ -46,21 +46,22 @@ SOFT = "#9a9ab0"
 LIGHT = "#e8e8f0"
 ACCENT = "#e4572e"
 
-# Viewer support. Status: tested (checked here), expected (standard PDF
-# feature, not tested here), pages (shown as ordinary pages, no motion),
-# no, unknown.
-VIEWERS = ["Chrome / Edge", "Acrobat / Reader", "Firefox", "Preview, mobile"]
+# Viewer support, as verified by the Playwright suite (e2e/support.js).
+# Status: tested (checked in that viewer), engine (Firefox's pdf.js engine
+# checked in Chromium), expected (standard PDF feature, not run here),
+# pages (frames show as ordinary pages), no.
+VIEWERS = ["Chrome / Edge", "Firefox", "Acrobat", "Preview"]
 SUPPORT = [
-    ("Pixel-exact pages", ["tested", "expected", "expected", "expected"]),
-    ("Flipbook auto-play", ["pages", "expected", "unknown", "pages"]),
-    ("Games (JavaScript)", ["tested", "expected", "unknown", "no"]),
-    ("Links, bookmarks", ["tested", "expected", "expected", "expected"]),
+    ("Pixel-exact pages", ["tested", "engine", "expected", "expected"]),
+    ("Flipbook auto-play", ["pages", "pages", "expected", "pages"]),
+    ("Games (JavaScript)", ["tested", "engine", "expected", "no"]),
+    ("Links, bookmarks", ["tested", "engine", "expected", "expected"]),
 ]
 STATUS = {
     "tested": ("TESTED", "#2ecc71"),
-    "expected": ("EXPECTED", "#9be7b4"),
+    "engine": ("PDF.JS TESTED", "#7bdc9f"),
+    "expected": ("EXPECTED", "#b8e8c8"),
     "pages": ("PAGES ONLY", "#feca57"),
-    "unknown": ("UNTESTED", "#9a9ab0"),
     "no": ("NO", "#ff6b6b"),
 }
 
@@ -156,17 +157,17 @@ def support_page(pages: int) -> Canvas:
 
     y += 30
     legend = [
-        ("TESTED", "checked in this project's test suite (headless Chromium / PDFium)"),
+        ("TESTED", "checked by the Playwright suite in Chrome's PDF viewer"),
+        ("PDF.JS TESTED", "Firefox's PDF engine checked in Chromium; not Firefox itself"),
         ("EXPECTED", "standard PDF feature the viewer documents; not run here"),
         ("PAGES ONLY", "frames show as ordinary pages you scroll or click through"),
-        ("UNTESTED", "partial support is likely; not verified"),
         ("NO", "the viewer does not run PDF JavaScript"),
     ]
     for label, text in legend:
         color = next(v[1] for v in STATUS.values() if v[0] == label)
         R.rect(c, m, y, 26, 26, color, radius=6)
         draw_text(c, label, m + 40, y + 6, INK, scale=2)
-        draw_text(c, text, m + 220, y + 6, MUTED, scale=2)
+        draw_text(c, text, m + 250, y + 6, MUTED, scale=2)
         y += 40
 
     y += 40
@@ -174,8 +175,8 @@ def support_page(pages: int) -> Canvas:
         "To play the flipbook in Acrobat: go to its first frame and press",
         "Ctrl+L (Cmd+L on a Mac). Frames advance by themselves, then stop",
         "at the games. Games run in Chrome, Edge and Acrobat: click the",
-        "pale key box and type, or press the on-screen buttons. A game",
-        "only runs while its page is the one in view.",
+        "pale key box and type, or press the on-screen buttons; Firefox",
+        "runs them too. A game only runs while its page is in view.",
     ]
     draw_text(c, "HOW TO WATCH AND PLAY", m, y, INK, scale=3)
     y += 44

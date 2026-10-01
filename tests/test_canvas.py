@@ -6,8 +6,8 @@ from pixelpdf import Canvas, a4_size, parse_color
 
 def test_a4_size():
     assert a4_size(72) == (595, 842)
-    assert a4_size(144) == (1191, 1684)
-    assert a4_size(288) == (2381, 3368)
+    assert a4_size(144) == (1190, 1684)
+    assert a4_size(288) == (2380, 3368)
 
 
 @pytest.mark.parametrize("color, channels, expected", [

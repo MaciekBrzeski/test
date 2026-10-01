@@ -137,12 +137,12 @@ def test_runtime_is_es5():
 
 # -- runtime and games, run in node ------------------------------------------
 
-def run_js(tmp_path, game=None, config=None, steps=(), setup=None):
+def run_js(tmp_path, game=None, config=None, steps=(), setup=None, viewer_type=None):
     cfg = {"id": "g0", "page": None, "cols": 10, "rows": 6, "colors": 4, "prefix": "px",
            "glyph": "n", "fps": 30, "seed": 5, "holdMs": 150, "pauseKey": "p", "keyField": None}
     cfg.update(config or {})
     scenario = {"runtime": str(RUNTIME), "config": cfg, "steps": list(steps), "setup": setup,
-                "game": str(GAME_DIR / game) if game else None}
+                "game": str(GAME_DIR / game) if game else None, "viewerType": viewer_type}
     path = tmp_path / "scenario.json"
     path.write_text(json.dumps(scenario))
     out = subprocess.run([NODE, str(HARNESS), str(path)], check=True, capture_output=True, text=True)
@@ -289,42 +289,6 @@ def test_fireworks_particles_stay_in_bounds(tmp_path):
     assert out["hud"]["count"].startswith("SPARKS ")
 
 
-# -- end to end, in Chromium's PDF viewer ------------------------------------
-
-CHROMIUM = Path("/opt/pw-browsers/chromium-1194/chrome-linux/chrome")
-PLAYWRIGHT = Path("/opt/node22/lib/node_modules/playwright")
-E2E = Path(__file__).resolve().parent / "js" / "e2e.js"
-needs_chromium = pytest.mark.skipif(
-    NODE is None or not CHROMIUM.exists() or not PLAYWRIGHT.exists(),
-    reason="needs node, Playwright and Chromium")
-
-
-def run_e2e(pdf: Path, scenario: str, tmp_path: Path) -> dict:
-    out = subprocess.run([NODE, str(E2E), str(pdf), scenario, str(tmp_path), str(CHROMIUM),
-                          str(PLAYWRIGHT)], capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, out.stderr
-    return json.loads(out.stdout.strip().splitlines()[-1])
-
-
-@needs_chromium
-def test_e2e_fireworks_animate_in_chromium(tmp_path):
-    pdf = tmp_path / "fireworks.pdf"
-    build_game("fireworks").save(pdf)
-    result = run_e2e(pdf, "animate", tmp_path)
-    assert result["changed"] > 50        # the display keeps changing by itself
-    assert result["colored"] > 20        # and shows palette colours
-
-
-@needs_chromium
-def test_e2e_snake_responds_to_keys_and_pause(tmp_path):
-    pdf = tmp_path / "snake.pdf"
-    build_game("snake").save(pdf)
-    result = run_e2e(pdf, "keys", tmp_path)
-    assert result["idle_changed"] == 0     # nothing moves before a key is pressed
-    assert result["moving_changed"] > 0    # 'd' starts the snake
-    assert result["paused_changed"] == 0   # 'p' freezes it
-
-
 @needs_node
 def test_runtime_sleeps_while_its_page_is_not_shown(tmp_path):
     setup = "PX_DOC = {pageNum: 0}; PX.run({update: function (px) { px.set(0, 0, 1); }});"
@@ -333,3 +297,67 @@ def test_runtime_sleeps_while_its_page_is_not_shown(tmp_path):
              {"eval": "PX_DOC.pageNum = 2; PX._tick(); PX.frame"}]
     out = run_js(tmp_path, config={"page": 2}, setup=setup, steps=steps)
     assert out["results"] == [0, 0, 1]
+
+
+@needs_node
+def test_runtime_line(tmp_path):
+    out = run_js(tmp_path, setup="PX.run({init: function (px) { px.line(0, 0, 9, 3, 1); }});")
+    lit = [(x, y) for y, row in enumerate(out["grid"]) for x, c in enumerate(row) if c == "1"]
+    assert (0, 0) in lit and (9, 3) in lit
+    assert len(lit) == 10                       # one pixel per column on an x-major line
+    assert all(abs(lit[i + 1][1] - lit[i][1]) <= 1 for i in range(len(lit) - 1))
+
+
+@needs_node
+@pytest.mark.parametrize("viewer, glyph", [(None, "n"), ("pdfium", "n"), ("PDF.js", "\u25a0")])
+def test_runtime_picks_glyph_for_viewer(tmp_path, viewer, glyph):
+    setup = "PX.run({init: function (px) { px.set(2, 0, 1); }});"
+    out = run_js(tmp_path, config={"unicodeGlyph": "\u25a0"}, setup=setup, viewer_type=viewer)
+    assert out["rowFields"]["px0_1"] == "  " + glyph + " " * 7
+
+
+@needs_node
+def test_runtime_reports_game_errors_in_a_hud_field(tmp_path):
+    setup = "PX.run({update: function () { throw new Error('boom'); }});"
+    out = run_js(tmp_path, setup=setup, steps=[{"eval": "PX._tick(); PX.frame"}])
+    assert out["hud"]["error"] == "error: Error: boom"
+    assert out["results"] == [1]
+
+
+@needs_node
+def test_runtime_start_schedules_its_timer_and_clears_the_key_field(tmp_path):
+    steps = [{"eval": "getField('g0_keys').value = 'abc'; PX.start(); PX._tick();"
+                      "[getField('g0_keys').value, app.intervals[0][0], app.intervals[0][1]]"}]
+    out = run_js(tmp_path, config={"keyField": "g0_keys", "fps": 25}, setup="PX.run({});",
+                 steps=steps)
+    assert out["results"][0] == ["", 'PXR["g0"]._tick()', 40]
+
+
+@needs_node
+def test_breakout_clearing_the_wall_starts_the_next_level(tmp_path):
+    steps = [{"keys": " ", "frames": 2},
+             {"eval": "Breakout.state.left = 0; 0"},     # as if the last brick just broke
+             {"frames": 2},
+             {"eval": "[Breakout.state.level, Breakout.state.lives, Breakout.state.left,"
+                      " Breakout.state.state]"}]
+    out = run_js(tmp_path, "breakout.js", BREAKOUT, steps)
+    assert out["results"][1] == [2, 4, 100, "serve"]
+    assert out["hud"]["lives"] == "LIVES 4  LEVEL 2"
+
+
+def test_button_appearance_centres_and_fits_its_label():
+    from pixelpdf.interactive.builder import _label_width
+    assert _label_width("LAUNCH", 10) == pytest.approx((611 + 5 * 722) / 100)  # L + AUNCH
+    doc = InteractiveDocument(dpi=72)
+    page = doc.new_page(background=0, size=(200, 100))
+    page.display(0, 0, 2, 2, 10, [None, 0])
+    page.button(" ", 10, 10, 40, 30, label="A VERY LONG LABEL")
+    page.set_game("PX.run({});")
+    with pikepdf.open(io.BytesIO(doc.to_bytes())) as pdf:
+        btn = [f for f in pdf.Root.AcroForm.Fields if str(f.T) == "g0_btn_0"][0]
+        ap = btn.AP.N
+        assert [float(v) for v in ap.BBox] == [0, 0, 40, 30]
+        ops = ap.read_bytes().decode()
+        size = float(ops.split("/Helv ")[1].split()[0])
+        assert _label_width("A VERY LONG LABEL", size) <= 40 * 0.9 + 0.01  # shrunk to fit
+        assert "(A VERY LONG LABEL) Tj" in ops

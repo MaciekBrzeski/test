@@ -102,7 +102,7 @@ def add_game_page(doc: InteractiveDocument, name: str) -> InteractivePage:
     page = doc.new_page(background="#101018")
     c = page.canvas
     W, H = c.width, c.height
-    k = W / 1191  # layout was designed at 144 DPI; scale for other resolutions
+    k = W / 1190  # layout was designed at 144 DPI; scale for other resolutions
 
     def px(v: float) -> int:
         return round(v * k)
@@ -148,7 +148,7 @@ def add_game_page(doc: InteractiveDocument, name: str) -> InteractivePage:
     for line in spec.help:
         draw_text(c, line, x0, hy, "#e8e8f0", scale=max(1, px(3)))
         hy += px(40)
-    notes = ["Runs in Chrome, Edge and Adobe Acrobat/Reader (JavaScript enabled).",
+    notes = ["Runs in Chrome, Edge, Firefox and Adobe Acrobat/Reader (JavaScript on).",
              "Other viewers show the empty screen: they don't run PDF scripts."]
     ny = H - px(60) - len(notes) * px(30)
     for line in notes:

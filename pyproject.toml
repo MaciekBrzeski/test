@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 dependencies = ["numpy>=1.22"]
 
 [project.optional-dependencies]
-dev = ["pytest", "pikepdf", "pypdfium2", "pillow"]
+dev = ["pytest", "pytest-cov", "pikepdf", "pypdfium2", "pillow"]
 
 [tool.setuptools.packages.find]
 include = ["pixelpdf*"]
@@ -21,3 +21,10 @@ include = ["pixelpdf*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["pixelpdf"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

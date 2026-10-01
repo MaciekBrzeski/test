@@ -11,9 +11,11 @@ from typing import Sequence, Union
 
 import numpy as np
 
-__all__ = ["Canvas", "Color", "parse_color", "a4_size", "A4_MM", "BLEND_MODES"]
+__all__ = ["Canvas", "Color", "parse_color", "a4_size", "A4_MM", "A4_PT", "BLEND_MODES"]
 
 A4_MM = (210.0, 297.0)
+A4_PT = (595, 842)
+"""The usual A4 PDF page: whole points (209.9 x 297.0 mm)."""
 MM_PER_INCH = 25.4
 
 Color = Union[int, Sequence[int], str]
@@ -22,8 +24,13 @@ _MODES = {"L": 1, "RGB": 3, "CMYK": 4}
 
 
 def a4_size(dpi: float) -> tuple[int, int]:
-    """Pixel dimensions (width, height) of an A4 page at `dpi`."""
-    return tuple(round(mm / MM_PER_INCH * dpi) for mm in A4_MM)  # type: ignore[return-value]
+    """Pixel dimensions (width, height) of an A4 page at `dpi`.
+
+    The page is the conventional 595 x 842 pt A4 used by most PDFs. Whole
+    points matter: Chrome's viewer sizes pages in whole points, so a page
+    of e.g. 595.5 pt is drawn slightly scaled and its pixels get resampled.
+    """
+    return tuple(round(pt * dpi / 72) for pt in A4_PT)  # type: ignore[return-value]
 
 
 def parse_color(color: Color, channels: int) -> np.ndarray:

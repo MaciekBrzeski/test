@@ -50,11 +50,11 @@ def test_structure_and_metadata(rng):
     with pikepdf.open(io.BytesIO(data)) as pdf:
         assert pdf.check_pdf_syntax() == []
         assert len(pdf.pages) == 2
-        assert [float(v) for v in pdf.pages[0].MediaBox] == [0, 0, 595.5, 842]
+        assert [float(v) for v in pdf.pages[0].MediaBox] == [0, 0, 595, 842]
         assert [float(v) for v in pdf.pages[1].MediaBox] == [0, 0, 50, 25]
         assert str(pdf.docinfo.Title) == "Pixel test"
         image = pdf.pages[0].Resources.XObject.Im0
-        assert (int(image.Width), int(image.Height)) == (1191, 1684)
+        assert (int(image.Width), int(image.Height)) == (1190, 1684)
         assert bool(image.Interpolate) is False
 
 

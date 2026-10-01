@@ -105,8 +105,14 @@ function PXRuntime(cfg) {
     px.text(s, Math.floor((W - px.textWidth(String(s))) / 2), y, c);
   };
 
+  // PDFium/Acrobat draw field text with the field's own font (ZapfDingbats);
+  // pdf.js (Firefox) draws it with web fonts, so it needs a Unicode glyph.
+  var glyph = cfg.glyph;
+  if (typeof app !== 'undefined' && app && app.viewerType === 'PDF.js' && cfg.unicodeGlyph)
+    glyph = cfg.unicodeGlyph;
+  px.glyph = glyph;
+
   function flush() {
-    var glyph = cfg.glyph;
     for (var y = 0; y < H; y++) {
       if (!dirty[y]) continue;
       dirty[y] = false;
