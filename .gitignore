@@ -8,3 +8,4 @@ playwright-report/
 coverage/
 e2e/.fixtures/
 e2e/pdfjs/_probe*.pdf
+.coverage
